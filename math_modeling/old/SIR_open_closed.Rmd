@@ -1,0 +1,284 @@
+---
+title: "Simulating SEIR Models in a Closed and Open Population"
+author: "Nick Brazeau"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, fig.align = 'center', results = 'hide', fig.keep = 'all')
+library(tidyverse)
+library(tikzDevice)
+library(cowplot)
+# https://rmarkdown.rstudio.com/flexdashboard/layouts.html#multiple_pages
+```
+
+
+
+```{r}
+#..............................................................
+# Open Model
+#..............................................................
+# stochastic simulator for the unobserved state process --> how cases are generated
+open_seir_step <- function(S, E, I, R, N, Beta, mu_IR, mu_L, delta.t){
+  SI_events <- rbinom(n = 1, size = S, prob = 1 - exp((-mu_L -Beta*(I/N))*delta.t))
+  SI_deaths <- rbinom(n = 1, size = SI_events, prob = 1 - exp(-mu_L/(mu_L +Beta*(I/N))))
+  infected <- SI_events - SI_deaths
+  IR_events <- rbinom(n = 1, size = I, prob = 1 - exp(-mu_L -mu_IR*delta.t))
+  IR_deaths <- rbinom(n = 1, size = IR_events, prob = 1 - exp(-mu_L/(mu_L + mu_IR)))
+  recovered <- IR_events - IR_deaths
+  recovered_deaths <- rbinom(n = 1, size = R, prob = 1 - exp(-mu_L))
+  
+  S <- S - infected + IR_deaths + recovered_deaths 
+  I <- I + infected - recovered - IR_deaths
+  R <- R + recovered - recovered_deaths
+  N <- S + I + R
+  return(c("N" = N, "S" = S, "I" = I, "R" = R))
+}
+# recursively just step through time now
+open_seir_wrapper <-  function(N, I0, R0, Beta, mu_IR, mu_L, time, ...){
+  # set up
+  S0 <- N - I0  - R0
+  time.steps <- (time - dplyr::lag(time))
+  # init 
+  ret <- matrix(NA, nrow = length(time.steps) , ncol = 4)
+  ret[1,] <- open_seir_step(S = S0, 
+                            I = I0, R = R0, N = N, 
+                            Beta = Beta, 
+                            mu_IR = mu_IR, 
+                            mu_L = mu_L,
+                            delta.t = 0)
+  
+  for (t in 2:length(time.steps)) {
+    ret[t,] <-  open_seir_step(S = ret[t-1, 2], 
+                               I = ret[t-1, 3], 
+                               R = ret[t-1, 4], 
+                               N = ret[t-1, 1], 
+                               Beta = Beta, 
+                               mu_IR = mu_IR, 
+                               mu_L = mu_L,
+                               delta.t = time.steps[t]
+    )
+  }
+  # out
+  ret <- cbind.data.frame(time, ret)
+  colnames(ret) <- c("time", "N", "S", "I", "R")
+  return(ret)
+  
+}
+
+#..............................................................
+# Closed Model
+#..............................................................
+closed_seir_step <- function(S,I, R, N, Beta, mu_IR, delta.t){
+  dN_SI <- rbinom(n = 1, size = S, prob = 1 - exp(-Beta*(I/N)*delta.t))
+  dN_IR <- rbinom(n = 1, size = I, prob = 1 - exp(-mu_IR*delta.t))
+  S <- S - dN_SI
+  I <- I + dN_SI - dN_IR
+  R <- R + dN_IR
+  return(c("S" = S, "I" = I, "R" = R))
+}
+
+# recursively just step through time now
+closed_seir_wrapper <-  function(N, I0, R0, Beta, mu_IR, time, ...){
+  # set up
+  S0 <- N - I0 - R0
+  time.steps <- (time - dplyr::lag(time))
+  # init 
+  ret <- matrix(NA, nrow = length(time.steps) , ncol = 3)
+  ret[1,] <- closed_seir_step(S = S0, 
+                              I = I0, R = R0, N = N, 
+                              Beta = Beta, 
+                              mu_IR = mu_IR, delta.t = 0)
+  
+  for (t in 2:length(time.steps)) {
+    ret[t,] <-  closed_seir_step(S = ret[t-1, 1], 
+                                 I = ret[t-1, 2], 
+                                 R = ret[t-1, 3], 
+                                 N = N, # closed population
+                                 Beta = Beta, 
+                                 mu_IR = mu_IR, 
+                                 delta.t = time.steps[t]
+    )
+  }
+  # out
+  ret <- cbind.data.frame(time, ret)
+  colnames(ret) <- c("time", "S", "I", "R")
+  return(ret)
+  
+}
+
+
+```
+
+
+Sidebar {.sidebar}
+=====================================
+
+```{r, results='asis'}
+#..............................................................
+# Sliding Panel for Different Parameters we are estimating
+#..............................................................
+
+inputPanel(
+  sliderInput("Time", label = "Time Observed Since Start of Epidemic",
+              min = 0, max = 500, value = 100, step = 50),
+  
+  sliderInput("mu_L", label = "Birth & Death Rate",
+              min = 0.01, max = 0.1, value = 0.01, step = 0.005),
+  
+  sliderInput("beta", label = "Beta (Effective Contact Rate)",
+              min = 0, max = 1, value = 0.5, step = 0.001),
+  
+  sliderInput("mu_IR", label = "IR (Rate of Recovery)",
+              min = 0, max = 0.5, value = 0.02, step = 0.005)
+  
+)
+
+
+
+
+```
+
+SEIR Closed vs. Open
+=====================================
+
+```{r, results='asis', fig.align='center', fig.height=40, fig.width=10}
+
+renderPlot({ withProgress(message = 'Making plot', {
+  #..............................................................
+  # plot closed
+  #..............................................................
+  closed_truth <- closed_seir_wrapper(N = 1e5,
+                                      I0 = 1,
+                                      R0 = 0,
+                                      Beta = input$beta,
+                                      mu_IR = input$mu_IR,
+                                      time = 1:input$Time)
+  
+  closed_seir_plot <- closed_truth %>% 
+    tidyr::gather(., key = "compartment", "count", 2:ncol(.)) %>% 
+    dplyr::mutate(Compartment = factor(compartment, levels = c("S", "I", "R"))) %>% 
+    ggplot() + 
+    geom_line(aes(x=time, y=count, color = Compartment), size = 2, alpha = 0.9) +
+    scale_color_manual("", values = c("#2171b5", "#e41a1c", "#6a51a3")) +
+    xlab("Time") + ylab("N") + ggtitle("SIR Closed Population") +
+    scale_y_continuous(label = scales::unit_format(big.mark = ",", scale = 1, unit = "")) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5,  hjust = 0.5, size = 18),
+      axis.text.x = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      axis.text.y = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14, angle = 45),
+      legend.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5, size = 15),
+      legend.text = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      panel.background = element_rect(fill = "transparent"),
+      plot.background = element_rect(fill = "transparent"),
+      legend.background = element_rect(fill = "transparent")) 
+  
+  cum_closed_infected_plot <- closed_truth %>% 
+    tidyr::gather(., key = "compartment", "count", 2:ncol(.)) %>% 
+    dplyr::mutate(Compartment = factor(compartment, levels = c("S", "I", "R"))) %>% 
+    dplyr::filter(Compartment == "I") %>% 
+    dplyr::mutate(cumInxfn = cumsum(count)) %>% 
+    ggplot() + 
+    geom_line(aes(x = time, y = cumInxfn), color = "#e41a1c", size = 3) +
+    geom_area(aes(x = time, y = cumInxfn), fill = "#e41a1c", alpha = 0.5) +
+    xlab("Time") + ylab("Num. Infxn") + ggtitle("SIR Closed Population") +
+    scale_y_continuous(label = scales::unit_format(big.mark = ",", scale = 1, unit = "")) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5, hjust = 0.5, size = 18),
+      axis.text.x = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      axis.text.y = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14, angle = 45),
+      legend.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5, size = 15),
+      legend.text = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      panel.background = element_rect(fill = "transparent"),
+      plot.background = element_rect(fill = "transparent"),
+      legend.background = element_rect(fill = "transparent")) 
+  
+  
+  
+  #..............................................................
+  # plot OPEN MODEL
+  #..............................................................
+  open_truth <- open_seir_wrapper(N = 1e5,
+                                  I0 = 1,
+                                  R0 = 0,
+                                  Beta = input$beta,
+                                  mu_IR = input$mu_IR,
+                                  mu_L = input$mu_L,
+                                  time = 1:input$Time)
+  
+  cum_open_infected_plot <- open_truth %>% 
+    tidyr::gather(., key = "compartment", "count", 2:ncol(.)) %>% 
+    dplyr::mutate(Compartment = factor(compartment, levels = c("S", "I", "R"))) %>% 
+    dplyr::filter(Compartment == "I") %>% 
+    dplyr::mutate(cumInxfn = cumsum(count)) %>% 
+    ggplot() + 
+    geom_line(aes(x = time, y = cumInxfn), color = "#e41a1c", size = 3) +
+    geom_area(aes(x = time, y = cumInxfn), fill = "#e41a1c", alpha = 0.5) +
+    xlab("Time") + ylab("Num. Infxn") + ggtitle("SIR Open Population") +
+    scale_y_continuous(label = scales::unit_format(big.mark = ",", scale = 1, unit = "")) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5, hjust = 0.5, size = 18),
+      axis.text.x = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      axis.text.y = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14, angle = 45),
+      legend.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5, size = 15),
+      legend.text = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      panel.background = element_rect(fill = "transparent"),
+      plot.background = element_rect(fill = "transparent"),
+      legend.background = element_rect(fill = "transparent")) 
+  
+  
+  open_truthPlot <- open_truth %>% 
+    dplyr::select(-c("N")) %>% 
+    tidyr::gather(., key = "compartment", "count", 2:ncol(.)) %>% 
+    dplyr::mutate(Compartment = factor(compartment, levels = c("S", "I", "R"))) %>% 
+    ggplot() + 
+    geom_line(aes(x=time, y=count, color = Compartment), size = 2, alpha = 0.9) +
+    scale_color_manual("", values = c("#2171b5", "#e41a1c", "#6a51a3")) +
+    xlab("Time") + ylab("N") + ggtitle("SIR Open Population") +
+    scale_y_continuous(label = scales::unit_format(big.mark = ",", scale = 1, unit = "")) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5,  hjust = 0.5, size = 18),
+      axis.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5, size = 15),
+      axis.text.x = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      axis.text.y = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14, angle = 45),
+      legend.title = element_text(family = "Helvetica", face = "bold", vjust = 0.5, size = 15),
+      legend.text = element_text(family = "Helvetica", hjust = 0.5, vjust = 0.5, size = 14),
+      panel.background = element_rect(fill = "transparent"),
+      plot.background = element_rect(fill = "transparent"),
+      legend.background = element_rect(fill = "transparent")) 
+  
+}) # end of progress bar
+  
+  #..............................................................
+  # plot out
+  #..............................................................
+  toprow <- cowplot::plot_grid(closed_seir_plot, open_truthPlot, nrow = 1)
+  #middlerow <- cowplot::plot_grid(cum_closed_infected_plot, cum_open_infected_plot, nrow = 1)
+  
+  
+  # R0
+  R0 <- round(input$beta / (input$mu_IR + input$mu_L), 2)
+  bottomrow <- ggplot() + geom_text(aes(0,0,
+              label= paste0("R[0] %~~% beta / (gamma + mu[L]) %~~%", R0)), parse=TRUE, size = 10, fontface = "bold") +
+    theme_minimal() + 
+    theme(
+      panel.grid = element_blank(),
+      axis.text = element_blank(),
+      axis.title = element_blank()
+    ) + xlim(-0.1, 0.1) + ylim(-0.1, 0.1)
+
+  
+  cowplot::plot_grid(toprow, middlerow, bottomrow, nrow = 3, rel_heights = c(2, 2, 1))
+})
+
+
+```

@@ -1,0 +1,263 @@
+---
+title: "Example Births R Markdown File"
+author: "Nick Brazeau"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    highlight: tango
+    theme: lumen
+    toc: yes
+    toc_float: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = T, warning = F, message = F, error = F, eval = T)
+
+# These are my global options, I can set these to change the default behavior of my R code chunks
+# Note the include = FALSE means it won't be included in my report but will be evaluated 
+
+```
+
+```{r libraries}
+# data wrangling
+library(tidyverse)
+
+# table outputs
+library(knitr) # and so much more
+library(kableExtra)
+
+# fancy outputs
+library(DT)
+library(stargazer)
+library(plotly)
+
+
+```
+
+# Reproducibiltiy Example
+```{r}
+# source("~/Desktop/ex.R")
+# df %>% 
+#   dplyr::group_by(favoriteprogram) %>% 
+#   dplyr::summarise(n=n()) %>% 
+#   ggplot(data=.) + 
+#   geom_bar(aes(x=favoriteprogram, y=n), stat="identity")
+
+```
+
+# Births Dataset
+Previously, the R Instructors made me do a bunch of work cleaning and recoding this database. I tidied it and then saved it as an RDS object using the script `01_tidy-data.R` in the `analysis` directory of my **Births R Project**. I am now going to read in my tidy dataset and investigate if prenatal care reduces the risk of preterm birth. 
+```{r, echo=F}
+# this will not show my code
+births <- readRDS("../data/births_afterhw2.RDS")
+```
+```{r, echo=T}
+# note the difference here, this WILL show my code in the report
+births <- readRDS("../data/births_afterhw2.RDS")
+```
+## Simply for Speed (and check out eval)
+> This is a great time to point out that I subsetted the births dataset to 500 observations for speed. I did this with the `set.seed()` function. My code looked like this:     
+
+```{r, echo=T, eval=F}
+set.seed(43)
+births <- births[sample(1:nrow(births), size=500, replace = F), ]
+write_rds(x=births, path="data/births_afterhw2.RDS")
+```
+
+# Code Chunks
+## Toggling Results
+#### Hide
+```{r, eval = T, results='hide'}
+
+summary(births$mrace)
+
+```
+#### ASIS 
+```{r, eval=T, results='asis'}
+
+# some of this was set in my global options but as a reminder
+
+summary(births$mrace)
+
+```
+
+^ Some code will not output in "pretty" formats. 
+
+##### Prettier Table Outpet
+Ways around this but data.frames or tibbles to knitr ["kables"](https://rdrr.io/cran/knitr/man/kable.html) privdes a nice option. [Kableextra](https://cran.r-project.org/web/packages/kableExtra/vignettes/awesome_table_in_html.html) has additional features. 
+
+#### Hide
+```{r, echo=T, eval=F}
+
+births %>% 
+  dplyr::select(mage, raceeth_f) %>% 
+  dplyr::group_by(raceeth_f) %>% 
+  dplyr::summarise(meanage=mean(mage)) %>% 
+  knitr::kable(.)
+
+```
+#### ASIS 
+```{r, echo=F, eval=T, results='asis'}
+
+births %>% 
+  dplyr::select(mage, raceeth_f) %>% 
+  dplyr::group_by(raceeth_f) %>% 
+  dplyr::summarise(meanage=mean(mage))%>% 
+  knitr::kable(.)
+
+```
+
+#### Kableextra asis  
+```{r, echo=F, eval=T, results='asis'}
+
+
+births %>% 
+  dplyr::select(mage, raceeth_f) %>% 
+  dplyr::group_by(raceeth_f) %>% 
+  dplyr::summarise(meanage=mean(mage)) %>% 
+  mutate_if(is.numeric, round, 2) %>% # remember mutate if?
+  knitr::kable(., "html") %>%  # note must tell kableExtra html or latex
+  kableExtra::kable_styling(bootstrap_options = "striped", full_width = F, position = "center")
+
+```
+
+
+
+## Controlling Figure Size 
+### Reasonable
+```{r, results='asis', fig.align='center', fig.height=6, fig.width=6}
+
+births %>%
+  dplyr::group_by(mage) %>% 
+  dplyr::summarise(n=n()) %>% 
+  ggplot(data=.) + geom_bar(aes(x=mage, y=n), stat="identity")
+```
+
+### Ridiculous
+```{r, results='asis', fig.align='right', fig.height=1, fig.width=6}
+
+births %>%
+  dplyr::group_by(mage) %>% 
+  dplyr::summarise(n=n()) %>% 
+  ggplot(data=.) + geom_bar(aes(x=mage, y=n), stat="identity")
+```
+
+# Outputs
+## Data
+
+### Raw
+```{r}
+DT::datatable(births, extensions='Buttons',
+               options = list(
+              searching = T,
+              pageLength = 5,
+              dom = 'Bfrtip', 
+              buttons = c('csv')))
+```
+### Summarized 
+```{r}
+births %>% 
+  dplyr::group_by(mage) %>% 
+  dplyr::summarise(n=n()) %>% 
+  DT::datatable(., extensions='Buttons',
+               options = list(
+              searching = T,
+              pageLength = 5,
+              dom = 'Bfrtip', 
+              buttons = c('csv')))
+```
+
+## Bivariate Analyses 
+### TableOne
+```{r}
+devtools::install_github("kaz-yos/tableone") # used in HW2, need for github for kableone functipn from PR #32 (https://github.com/kaz-yos/tableone/pull/32)
+library(tableone)
+
+vars_of_interest = c("pnc5_f", "preterm_f", "smoker_f", "wksgest", "sex", "mage", "meduc", "raceeth_f", "weeknum", "include_allpass")
+tableone::kableone(tableone::CreateTableOne(data=births[, vars_of_interest]))
+
+```
+
+## Regression Outputs
+```{r}
+births <- births %>% 
+  mutate(pnc5_f = factor(pnc5_f, levels = c("No Early PNC", "Early PNC"))) %>% 
+  mutate(preterm_f = factor(preterm_f, levels=c("term", "preterm")))
+
+crude <- glm(preterm_f ~ pnc5_f, 
+            data = births,
+            family = binomial(link = "logit"))
+
+mage <- glm(preterm_f ~ pnc5_f + mage + poly(mage, 2, raw = T),
+            data = births,
+            family = binomial(link = "logit"))
+
+magesm <- glm(preterm_f ~ pnc5_f + mage + poly(mage, 2, raw = T) + smoker_f, 
+            data = births,
+            family = binomial(link = "logit"))
+```
+
+### Broom
+```{r}
+broom::tidy(mage, exponentiate=TRUE, conf.int=TRUE)
+broom::tidy(mage)
+broom::confint_tidy(mage)
+exp(broom::confint_tidy(mage))
+exp(confint(mage))
+
+```
+
+### Stargazer
+```{r, results='asis'}
+stargazer::stargazer(crude, mage, magesm, title = "Results of Some Births Regression",
+          dep.var.labels=c("Preterm"),
+          add.lines=list(c("AIC", round(AIC(crude),1), round(AIC(mage),1), round(AIC(magesm),1))),
+          no.space=F,
+          ci=TRUE, ci.level=0.95,
+          single.row=F,
+          align=T,
+          type = "html")
+
+
+# stargazer::stargazer(crude, mage, magesm, title = "Results of Some Births Regression", 
+#           dep.var.labels=c("Preterm"),
+#           add.lines=list(c("AIC", round(AIC(crude),1), round(AIC(mage),1), round(AIC(magesm),1))),
+#           no.space=F,
+#           ci=TRUE, ci.level=0.95, 
+#           single.row=F,
+#           align=T, type = "latex")
+
+```
+
+# Graphics
+## plotly 
+```{r}
+library(plotly)
+plotObj <- ggplot(data=births, aes(x=mage, y=wksgest, color=preterm_f)) +
+  geom_point()
+
+plotly::ggplotly(plotObj)
+
+```
+
+
+# Other Engines
+### Using Bash
+```{bash}
+echo "Hi Nick" | sed 's/Nick/Sara/'
+```
+
+### Using Python
+```{python}
+def printsnake( str ):
+   print "SSSSSS" + str
+   return;
+   
+printsnake("hello")
+   
+```
+
+
